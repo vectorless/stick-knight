@@ -402,6 +402,34 @@
     const mixed = ((seed ^ (roomNumber * 1013904223) ^ extra) + 1) >>> 0;
     const rng = window.makeRng(mixed);
 
+    // Hard-mode level 60 is a special empty hall: just walls + giant door.
+    // No platforms, no enemies, no key, no exit door, no chest, no machine.
+    if (opts.mode === 'hard' && roomNumber === 60 && !opts.bonus) {
+      const tiles = createEmptyTiles();
+      // Open up the right wall opening too — but we don't actually use the
+      // normal exit in this room; the giant door is handled separately.
+      return {
+        tiles,
+        playerSpawn: { x: 1.5 * TILE, y: 15 * TILE - 4 },
+        keyPos: { x: -100, y: -100 },     // off-screen, never rendered
+        doorPos: { x: -100, y: -100 },    // sentinel — scene won't use this
+        bonusDoorPos: null,
+        enemySpawns: [],
+        enemySpeed: 80,
+        movingPlatforms: [],
+        darkRoom: false,
+        machinePos: null,
+        lasers: [],
+        giantDoor: {
+          // Centered, fills most of the playfield height/width.
+          x: COLS * TILE / 2,
+          y: ROWS * TILE / 2 + 8,
+          width: 18 * TILE,
+          height: 13 * TILE,
+        },
+      };
+    }
+
     const tiles = createEmptyTiles();
     const template = rng.pick(TEMPLATES);
     template(rng, tiles, roomNumber);
@@ -481,6 +509,10 @@
     } else {
       enemyCount = Math.min(6, 1 + Math.floor(roomNumber / 8));
     }
+    // Hard mode doubles the enemy count (forceEnemyCount overrides this).
+    if (opts.mode === 'hard' && opts.forceEnemyCount == null) {
+      enemyCount *= 2;
+    }
 
     const enemySpawns = [];
     for (let i = 0; i < enemyCount; i++) {
@@ -534,7 +566,7 @@
       }
     }
 
-    const darkRoom = rng.chance(0.05);
+    const darkRoom = rng.chance(opts.mode === 'hard' ? 0.10 : 0.05);
 
     // Challenge machine on every 10th regular level. Sits on the floor in
     // open space, away from spawn / door / bonus chest door.
@@ -556,6 +588,26 @@
       }
     }
 
+    // Wall lasers — only in hard mode, only on /5 regular levels.
+    const lasers = [];
+    if (opts.mode === 'hard' && roomNumber % 5 === 0 && !opts.bonus) {
+      const count = rng.int(1, 2);
+      const usedRows = new Set();
+      for (let i = 0; i < count; i++) {
+        let attempts = 0;
+        let row;
+        do {
+          row = rng.int(3, 13);
+          attempts++;
+        } while (usedRows.has(row) && attempts < 6);
+        usedRows.add(row);
+        const side = rng.chance(0.5) ? 'left' : 'right';
+        const x = side === 'left' ? TILE + 8 : (COLS - 1) * TILE - 8;
+        const y = row * TILE + TILE / 2;
+        lasers.push({ x, y, side });
+      }
+    }
+
     return {
       tiles,
       playerSpawn,
@@ -567,6 +619,7 @@
       movingPlatforms,
       darkRoom,
       machinePos,
+      lasers,
     };
   }
 

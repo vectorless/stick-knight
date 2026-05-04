@@ -1,5 +1,7 @@
 (function () {
-  const TOTAL_ROOMS = 50;
+  const NORMAL_TOTAL_ROOMS = 50;
+  const HARD_TOTAL_ROOMS = 60;
+  const totalRoomsFor = (mode) => (mode === 'hard' ? HARD_TOTAL_ROOMS : NORMAL_TOTAL_ROOMS);
 
   const ACHIEVEMENTS = [
     { id: 'room25',   name: 'Halfway-ish',     desc: 'Reach level 25' },
@@ -152,28 +154,62 @@
         '  Jump        Space / W / Up  (hold for higher jump)',
         '  Wall jump   while sliding on a wall, press jump',
         '  Attack      Left Click / J / X   (5 hits to kill an enemy)',
-        '  Shop        E              (gold drops from kills)',
-        '  Achievements  Q',
-        '  Interact      F            (challenge machine on /10 levels)',
+        '  Shop        E       Achievements  Q       Interact  F',
         '',
         '  Find the key, kill enemies, exit through the door on the right.',
-        '',
-        '  Press ENTER to start',
       ];
-      this.add.text(w / 2, h / 2 + 20, controls.join('\n'), {
+      this.add.text(w / 2, h / 2 - 10, controls.join('\n'), {
         fontFamily: 'monospace',
-        fontSize: '18px',
+        fontSize: '17px',
         color: '#dddddd',
         align: 'center',
       }).setOrigin(0.5);
 
-      const startRun = () => {
+      let secretUnlocked = false;
+      try { secretUnlocked = localStorage.getItem('stick-knight-secret') === '1'; }
+      catch (e) {}
+
+      this.add.text(w / 2, h - 175, 'CHOOSE A DIFFICULTY', {
+        fontFamily: 'monospace', fontSize: '18px',
+        color: '#cccccc', fontStyle: 'bold',
+      }).setOrigin(0.5);
+      this.add.text(w / 2, h - 145, '1.  NORMAL', {
+        fontFamily: 'monospace', fontSize: '20px',
+        color: '#9be39b', fontStyle: 'bold',
+      }).setOrigin(0.5);
+      this.add.text(w / 2, h - 115,
+        '2.  HARD  —  2x enemies, more dark rooms, lasers on /5, /20 checkpoints, 60 levels',
+        { fontFamily: 'monospace', fontSize: '14px',
+          color: '#ff8888', fontStyle: 'bold' }
+      ).setOrigin(0.5);
+      if (secretUnlocked) {
+        this.add.text(w / 2, h - 85,
+          '3.  SECRET  —  start with poky stick + 100 gold, pink everything',
+          { fontFamily: 'monospace', fontSize: '14px',
+            color: '#ff7ae0', fontStyle: 'bold' }
+        ).setOrigin(0.5);
+      }
+      this.add.text(w / 2, h - 50,
+        secretUnlocked ? 'press 1, 2, or 3 to start' : 'press 1 or 2 to start',
+        { fontFamily: 'monospace', fontSize: '14px', color: '#888888' }
+      ).setOrigin(0.5);
+
+      const startRun = (mode) => {
         window.STICK_CHECKPOINT = null;
         const seed = (Math.random() * 0x7fffffff) >>> 0;
-        this.scene.start('GameScene', { roomNumber: 1, hearts: 3, seed });
+        const data = { roomNumber: 1, hearts: 3, seed, mode };
+        if (mode === 'secret') {
+          data.gold = 100;
+          data.weapon = 'poky';
+        }
+        this.scene.start('GameScene', data);
       };
-      this.input.keyboard.once('keydown-ENTER', startRun);
-      this.input.keyboard.once('keydown-SPACE', startRun);
+      this.input.keyboard.once('keydown-ONE', () => startRun('normal'));
+      this.input.keyboard.once('keydown-TWO', () => startRun('hard'));
+      if (secretUnlocked) {
+        this.input.keyboard.once('keydown-THREE', () => startRun('secret'));
+      }
+      this.input.keyboard.once('keydown-ENTER', () => startRun('normal'));
     }
   }
 
@@ -193,10 +229,13 @@
       this.startingGold = data.gold || 0;
       this.startingWeapon = data.weapon || 'stick';
       this.startingSpeedUntil = data.speedUntil || 0;
+      this.startingHasSlumberKey = !!data.hasSlumberKey;
       this.isBonus = !!data.bonus;
       this.bonusOriginLevel = data.bonusOriginLevel || 0;
       this.bonusCompleted = false;
       this.challengePromptOpen = false;
+      this.mode = data.mode === 'hard' ? 'hard' : 'normal';
+      this.totalRooms = totalRoomsFor(this.mode);
     }
 
     create() {
@@ -227,6 +266,7 @@
         buy2: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.TWO),
         buy3: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.THREE),
         buy4: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.FOUR),
+        buy5: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.FIVE),
         esc: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC),
         achievements: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Q),
         interact: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.F),
@@ -246,11 +286,14 @@
       this.player.gold = this.startingGold;
       this.player.speedUntil = this.startingSpeedUntil;
       this.player.setWeapon(this.startingWeapon);
+      this.player.hasSlumberKey = this.startingHasSlumberKey;
 
       this.physics.add.collider(this.player.sprite, this.platformsGroup);
       this.physics.add.collider(this.enemiesGroup, this.platformsGroup);
       this.physics.add.collider(this.player.sprite, this.movingPlatformsGroup);
       this.physics.add.collider(this.enemiesGroup, this.movingPlatformsGroup);
+
+      this.laserProjectiles = [];
 
       this.physics.add.overlap(
         this.player.attackHitbox,
@@ -397,13 +440,40 @@
       if (this.machineLight) { this.machineLight.destroy(); this.machineLight = null; }
       if (this.machineLabel) { this.machineLabel.destroy(); this.machineLabel = null; }
       if (this.challengeBanner) { this.challengeBanner.destroy(); this.challengeBanner = null; }
+      if (this.giantDoorSprite) { this.giantDoorSprite.destroy(); this.giantDoorSprite = null; }
+      if (this.giantDoorDecor) {
+        for (const d of this.giantDoorDecor) d.destroy();
+        this.giantDoorDecor = null;
+      }
+      if (this.giantDoorLabel) { this.giantDoorLabel.destroy(); this.giantDoorLabel = null; }
+      if (this.laserTurrets) {
+        for (const t of this.laserTurrets) {
+          if (t.lens) t.lens.destroy();
+          t.destroy();
+        }
+        this.laserTurrets = null;
+      }
+      if (this.laserProjectiles) {
+        for (const p of this.laserProjectiles) {
+          if (p && p.active) p.destroy();
+        }
+        this.laserProjectiles = [];
+      }
 
       this.rng = window.makeRng((roomNumber * 7919 + 31) ^ this.sessionSeed);
 
       // Per-level background hue. Kept dim (low value) so foreground stays readable.
-      const hue = this.rng.float(0, 1);
-      const sat = this.rng.float(0.25, 0.5);
-      const val = this.rng.float(0.10, 0.18);
+      // Secret mode forces a pink tint regardless of level.
+      let hue, sat, val;
+      if (this.mode === 'secret') {
+        hue = 0.88;
+        sat = 0.55;
+        val = 0.16;
+      } else {
+        hue = this.rng.float(0, 1);
+        sat = this.rng.float(0.25, 0.5);
+        val = this.rng.float(0.10, 0.18);
+      }
       this.bg.setFillStyle(hsvToHex(hue, sat, val));
 
       // Procedural stone-brick overlay at 50% alpha. Detailed variant on /10
@@ -419,7 +489,9 @@
       this.stalactiteOverlay.setDepth(-3);
       drawStalactites(this, this.stalactiteOverlay);
 
-      const generatorOpts = this.isBonus ? { bonus: true, forceEnemyCount: 15 } : undefined;
+      const generatorOpts = this.isBonus
+        ? { bonus: true, forceEnemyCount: 15, mode: this.mode }
+        : { mode: this.mode };
       const room = window.RoomGenerator.generateRoom(roomNumber, this.sessionSeed, generatorOpts);
       this.room = room;
       this.tiles = room.tiles;
@@ -434,14 +506,19 @@
         this.healFlash();
       }
 
-      // Save a checkpoint when entering every 10th level. Death sends the
-      // player back to the most recent checkpoint instead of level 1.
-      if (roomNumber % 10 === 0) {
+      // Save a checkpoint on entering certain levels. Normal mode: every
+      // 10th level. Hard mode: every 20th, but level 50 is explicitly NOT
+      // a checkpoint (the final super-boss has to be earned).
+      const checkpointCadence = this.mode === 'hard' ? 20 : 10;
+      const skipCheckpoint = this.mode === 'hard' && roomNumber === 50;
+      if (roomNumber % checkpointCadence === 0 && !skipCheckpoint) {
         window.STICK_CHECKPOINT = {
           roomNumber: roomNumber,
           seed: this.sessionSeed,
           gold: this.player.gold,
           weapon: this.player.weapon,
+          mode: this.mode,
+          hasSlumberKey: this.player.hasSlumberKey,
         };
         this.showCheckpointBanner();
       }
@@ -475,7 +552,7 @@
       this.player.teleport(room.playerSpawn.x, room.playerSpawn.y);
       this.player.sprite.body.setVelocity(0, 0);
 
-      if (!this.isBonus) {
+      if (!this.isBonus && !room.giantDoor) {
         this.keySprite = this.add.rectangle(room.keyPos.x, room.keyPos.y, 18, 14, 0xfff36a);
         this.keySprite.setStrokeStyle(2, 0x8a6e10);
         this.physics.add.existing(this.keySprite);
@@ -516,7 +593,7 @@
           this.transitioning = true;
           this.cameras.main.flash(180, 255, 255, 255);
           this.time.delayedCall(180, () => {
-            if (this.roomNumber >= TOTAL_ROOMS) {
+            if (this.roomNumber >= this.totalRooms) {
               this.scene.start('WinScene');
             } else {
               this.scene.start('GameScene', {
@@ -526,10 +603,28 @@
                 gold: this.player.gold,
                 weapon: this.player.weapon,
                 speedUntil: this.player.speedUntil,
+                mode: this.mode,
+          hasSlumberKey: this.player.hasSlumberKey,
               });
             }
           });
         });
+      }
+
+      // Wall lasers — turrets that periodically fire projectiles at the player.
+      this.laserTurrets = [];
+      for (const l of room.lasers || []) {
+        const w = 16, h = 14;
+        const turret = this.add.rectangle(l.x, l.y, w, h, 0xb02828);
+        turret.setStrokeStyle(2, 0x4a0d0d);
+        turret.laserSide = l.side;
+        // Stagger initial fire timing so turrets aren't synchronized.
+        turret.nextFireAt = this.time.now + 700 + this.rng.int(0, 800);
+        // Small lens dot facing into the room.
+        const lensX = l.x + (l.side === 'left' ? 6 : -6);
+        const lens = this.add.rectangle(lensX, l.y, 4, 4, 0xff8c8c);
+        turret.lens = lens;
+        this.laserTurrets.push(turret);
       }
 
       // Challenge machine — only on every 10th regular level.
@@ -551,6 +646,88 @@
           fontFamily: 'monospace', fontSize: '11px',
           color: '#a8e6f5', fontStyle: 'bold',
         }).setOrigin(0.5);
+      }
+
+      // Giant door — hard-mode level 60 only. Press F while overlapping
+      // it (with the slumber key) to unlock secret mode.
+      if (room.giantDoor) {
+        const g = room.giantDoor;
+        this.giantDoorSprite = this.add.rectangle(g.x, g.y, g.width, g.height, 0x232040);
+        this.giantDoorSprite.setStrokeStyle(6, 0x9080d8);
+        this.physics.add.existing(this.giantDoorSprite);
+        this.giantDoorSprite.body.setAllowGravity(false);
+        this.giantDoorSprite.body.setImmovable(true);
+
+        this.giantDoorDecor = [];
+        const decor = this.giantDoorDecor;
+
+        // Inner panel border for a layered look.
+        const inner = this.add.rectangle(g.x, g.y, g.width - 36, g.height - 36);
+        inner.setStrokeStyle(3, 0x4a3a78);
+        decor.push(inner);
+
+        // Decorative corner bolts.
+        const bolt = (bx, by) => {
+          const r = this.add.rectangle(bx, by, 14, 14, 0x4a3a78);
+          r.setStrokeStyle(2, 0x12102a);
+          decor.push(r);
+        };
+        const bx = g.width / 2 - 30, by = g.height / 2 - 30;
+        bolt(g.x - bx, g.y - by); bolt(g.x + bx, g.y - by);
+        bolt(g.x - bx, g.y + by); bolt(g.x + bx, g.y + by);
+
+        // Crescent moon to the upper-left of the keyhole.
+        const moonGfx = this.add.graphics().setDepth(0);
+        const mx = g.x - 130, my = g.y - 80, mr = 38;
+        moonGfx.fillStyle(0xeae3ff, 1);
+        moonGfx.fillCircle(mx, my, mr);
+        moonGfx.fillStyle(0x232040, 1);
+        moonGfx.fillCircle(mx + 14, my - 6, mr);
+        decor.push(moonGfx);
+
+        // Big keyhole in the center, drawn as graphics (circle + tapered slot).
+        const khGfx = this.add.graphics();
+        khGfx.fillStyle(0x0e0c1c, 1);
+        khGfx.fillCircle(g.x, g.y - 30, 36);
+        khGfx.fillTriangle(
+          g.x - 26, g.y - 30,
+          g.x + 26, g.y - 30,
+          g.x,       g.y + 90
+        );
+        khGfx.lineStyle(3, 0x9080d8, 1);
+        khGfx.strokeCircle(g.x, g.y - 30, 36);
+        decor.push(khGfx);
+
+        // Sleepy 'z's drifting around the door.
+        const zPositions = [
+          { x: g.x + 110, y: g.y - 90, size: 36 },
+          { x: g.x + 150, y: g.y - 130, size: 28 },
+          { x: g.x + 180, y: g.y - 160, size: 20 },
+          { x: g.x - 180, y: g.y + 110, size: 30 },
+          { x: g.x - 140, y: g.y + 70,  size: 22 },
+        ];
+        for (const z of zPositions) {
+          const t = this.add.text(z.x, z.y, 'z', {
+            fontFamily: 'monospace', fontSize: `${z.size}px`,
+            color: '#7a6abe', fontStyle: 'bold italic',
+          }).setOrigin(0.5);
+          this.tweens.add({
+            targets: t,
+            y: z.y - 6,
+            alpha: { from: 0.7, to: 1 },
+            duration: 1400 + z.size * 10,
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+          });
+          decor.push(t);
+        }
+
+        this.giantDoorLabel = this.add.text(g.x, g.y - g.height / 2 - 26,
+          'press F if you have the slumber key',
+          { fontFamily: 'monospace', fontSize: '14px',
+            color: '#c8b3ff', fontStyle: 'italic' }
+        ).setOrigin(0.5);
       }
 
       // Challenge banner shown while inside the bonus room.
@@ -625,14 +802,17 @@
       const isBoss = !isSuperBoss && roomNumber % 10 === 0;
       let lvlSuffix = '';
       let lvlColor = '#f4d35e';
-      if (isSuperBoss) {
+      if (this.mode === 'secret') {
+        lvlSuffix = '  ~ SECRET ~';
+        lvlColor = '#ff7ae0';
+      } else if (isSuperBoss) {
         lvlSuffix = '  ** SUPER **';
         lvlColor = '#ff5050';
       } else if (isBoss) {
         lvlSuffix = '  * BOSS *';
         lvlColor = '#ff9a3c';
       }
-      this.hudRoomText.setText(`LVL ${roomNumber} / ${TOTAL_ROOMS}${lvlSuffix}`);
+      this.hudRoomText.setText(`LVL ${roomNumber} / ${this.totalRooms}${lvlSuffix}`);
       this.hudRoomText.setColor(lvlColor);
 
       // Fresh 2-minute timer for this level.
@@ -713,6 +893,73 @@
       const s = totalSec % 60;
       this.hudTimeText.setText(`TIME ${m}:${s.toString().padStart(2, '0')}`);
       this.hudTimeText.setColor(totalSec <= 30 ? '#ff5050' : '#cdeeff');
+    }
+
+    updateLasers(time) {
+      if (!this.laserTurrets || this.laserTurrets.length === 0) return;
+      for (const t of this.laserTurrets) {
+        if (!t.active) continue;
+        if (time >= t.nextFireAt) {
+          this.fireLaser(t);
+          t.nextFireAt = time + 1500;
+        }
+      }
+    }
+
+    fireLaser(turret) {
+      const px = this.player.sprite.x;
+      const py = this.player.sprite.y;
+      const dx = px - turret.x;
+      const dy = py - turret.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 1) return;
+      const speed = 260;
+
+      // Spawn the projectile slightly inside the room so its body doesn't
+      // overlap the wall on the first physics step.
+      const offset = 14;
+      const sx = turret.x + (turret.laserSide === 'left' ? offset : -offset);
+      const proj = this.add.rectangle(sx, turret.y, 8, 8, 0xff5050);
+      proj.setStrokeStyle(1, 0x4a0000);
+      this.physics.add.existing(proj);
+      const body = proj.body;
+      body.setAllowGravity(false);
+      body.setImmovable(false);
+      body.setCollideWorldBounds(false);
+
+      // Per-projectile collider/overlap so we don't depend on a Physics
+      // Arcade Group resetting body state when objects are added to it.
+      this.physics.add.collider(proj, this.platformsGroup, () => {
+        this.removeLaserProjectile(proj);
+      });
+      this.physics.add.overlap(proj, this.player.sprite, () => {
+        this.player.takeDamage(this.time.now, proj.x);
+        this.removeLaserProjectile(proj);
+      });
+
+      // Set velocity LAST so nothing in the setup pipeline can clear it.
+      body.setVelocity((dx / len) * speed, (dy / len) * speed);
+
+      this.laserProjectiles.push(proj);
+
+      if (turret.lens) {
+        turret.lens.setFillStyle(0xfff0f0);
+        this.time.delayedCall(80, () => {
+          if (turret.lens && turret.lens.active) {
+            turret.lens.setFillStyle(0xff8c8c);
+          }
+        });
+      }
+      this.time.delayedCall(5000, () => {
+        if (proj && proj.active) this.removeLaserProjectile(proj);
+      });
+    }
+
+    removeLaserProjectile(proj) {
+      if (!proj || !proj.active) return;
+      const i = this.laserProjectiles ? this.laserProjectiles.indexOf(proj) : -1;
+      if (i >= 0) this.laserProjectiles.splice(i, 1);
+      proj.destroy();
     }
 
     updateDarkMask() {
@@ -902,6 +1149,49 @@
       }
     }
 
+    showSlumberKeyHint() {
+      const w = this.scale.width;
+      const t = this.add.text(w / 2, 70,
+        'you do not have the slumber man’s key',
+        {
+          fontFamily: 'monospace', fontSize: '16px',
+          color: '#c8b3ff', fontStyle: 'italic',
+          backgroundColor: '#000000', padding: { x: 12, y: 6 },
+        }
+      ).setOrigin(0.5).setDepth(2200).setAlpha(0);
+      this.tweens.add({
+        targets: t, alpha: { from: 0, to: 1 },
+        duration: 200, yoyo: true, hold: 1100,
+        onComplete: () => t.destroy(),
+      });
+    }
+
+    unlockSecretMode() {
+      this.transitioning = true;
+      try { localStorage.setItem('stick-knight-secret', '1'); } catch (e) {}
+
+      const w = this.scale.width;
+      const h = this.scale.height;
+      const dim = this.add.rectangle(w / 2, h / 2, w, h, 0x000000, 0.85).setDepth(2400);
+      const big = this.add.text(w / 2, h / 2 - 30, 'SECRET MODE UNLOCKED', {
+        fontFamily: 'monospace', fontSize: '34px',
+        color: '#ff7ae0', fontStyle: 'bold',
+      }).setOrigin(0.5).setDepth(2401);
+      const small = this.add.text(w / 2, h / 2 + 30, '… and you die.', {
+        fontFamily: 'monospace', fontSize: '20px',
+        color: '#aaaaaa', fontStyle: 'italic',
+      }).setOrigin(0.5).setDepth(2401);
+      this.cameras.main.flash(280, 255, 100, 220);
+
+      this.time.delayedCall(2200, () => {
+        dim.destroy(); big.destroy(); small.destroy();
+        this.scene.start('GameOverScene', {
+          roomNumber: this.roomNumber,
+          mode: this.mode,
+        });
+      });
+    }
+
     openChallengePrompt() {
       if (this.challengePromptOpen) return;
       this.challengePromptOpen = true;
@@ -965,6 +1255,8 @@
         weapon: this.player.weapon,
         bonus: true,
         bonusOriginLevel: this.roomNumber,
+        mode: this.mode,
+          hasSlumberKey: this.player.hasSlumberKey,
       };
       this.cameras.main.flash(220, 80, 200, 240);
       this.time.delayedCall(180, () => {
@@ -977,6 +1269,8 @@
           speedUntil: this.player.speedUntil,
           bonus: true,
           bonusOriginLevel: this.roomNumber,
+          mode: this.mode,
+          hasSlumberKey: this.player.hasSlumberKey,
         });
       });
     }
@@ -1004,15 +1298,17 @@
       // Replace the checkpoint with one pointing at the next regular level
       // so dying after the bonus doesn't drag the player back into it.
       window.STICK_CHECKPOINT = {
-        roomNumber: Math.min(nextLevel, TOTAL_ROOMS),
+        roomNumber: Math.min(nextLevel, this.totalRooms),
         seed: this.sessionSeed,
         gold: this.player.gold,
         weapon: this.player.weapon,
+        mode: this.mode,
+          hasSlumberKey: this.player.hasSlumberKey,
       };
 
       this.time.delayedCall(1700, () => {
         banner.destroy();
-        if (nextLevel > TOTAL_ROOMS) {
+        if (nextLevel > this.totalRooms) {
           this.scene.start('WinScene');
         } else {
           this.scene.start('GameScene', {
@@ -1022,6 +1318,8 @@
             gold: this.player.gold,
             weapon: this.player.weapon,
             speedUntil: this.player.speedUntil,
+            mode: this.mode,
+          hasSlumberKey: this.player.hasSlumberKey,
           });
         }
       });
@@ -1070,7 +1368,7 @@
 
       this.time.delayedCall(1500, () => {
         banner.destroy();
-        if (this.roomNumber >= TOTAL_ROOMS) {
+        if (this.roomNumber >= this.totalRooms) {
           this.scene.start('WinScene');
         } else {
           this.scene.start('GameScene', {
@@ -1080,6 +1378,8 @@
             gold: this.player.gold,
             weapon: this.player.weapon,
             speedUntil: this.player.speedUntil,
+            mode: this.mode,
+          hasSlumberKey: this.player.hasSlumberKey,
           });
         }
       });
@@ -1097,7 +1397,7 @@
       this.shopGroup = this.add.container(0, 0).setDepth(D);
 
       const dim = this.add.rectangle(w / 2, h / 2, w, h, 0x000000, 0.6);
-      const panel = this.add.rectangle(w / 2, h / 2, 620, 440, 0x1a1d28, 0.97);
+      const panel = this.add.rectangle(w / 2, h / 2, 660, 490, 0x1a1d28, 0.97);
       panel.setStrokeStyle(3, 0xf4d35e);
       const title = this.add.text(w / 2, h / 2 - 190, 'SHOP', {
         fontFamily: 'monospace', fontSize: '34px', color: '#f4d35e', fontStyle: 'bold',
@@ -1108,10 +1408,11 @@
       }).setOrigin(0.5);
 
       this.shopItems = [
-        { key: 'heal',  hotkey: '1', name: 'Healing Potion', desc: 'restore all hearts',          price: 30 },
-        { key: 'speed', hotkey: '2', name: 'Speed Potion',   desc: '2.5x speed for 20s',          price: 60 },
-        { key: 'poky',  hotkey: '3', name: 'Poky Stick',     desc: '3-hit kill weapon (perm)',    price: 120 },
-        { key: 'skip',  hotkey: '4', name: 'Skip Level',     desc: 'advance immediately',         price: 20 },
+        { key: 'heal',    hotkey: '1', name: 'Healing Potion',     desc: 'restore all hearts',                  price: 30 },
+        { key: 'speed',   hotkey: '2', name: 'Speed Potion',       desc: '2.5x speed for 20s',                  price: 60 },
+        { key: 'poky',    hotkey: '3', name: 'Poky Stick',         desc: '3-hit kill weapon (perm)',            price: 120 },
+        { key: 'skip',    hotkey: '4', name: 'Skip Level',         desc: 'advance immediately',                 price: 0 },
+        { key: 'slumber', hotkey: '5', name: "Slumber Man's Key",  desc: '???',                                 price: 300 },
       ];
       this.shopItemTexts = [];
       let y = h / 2 - 100;
@@ -1131,7 +1432,7 @@
         y += 54;
       }
 
-      const hint = this.add.text(w / 2, h / 2 + 190, 'press 1/2/3/4 to buy   E or ESC to close', {
+      const hint = this.add.text(w / 2, h / 2 + 215, 'press 1-5 to buy   E or ESC to close', {
         fontFamily: 'monospace', fontSize: '14px', color: '#888888',
       }).setOrigin(0.5);
 
@@ -1145,7 +1446,9 @@
       this.shopGoldText.setText(`Your gold: ${this.player.gold}g`);
       for (const t of this.shopItemTexts) {
         const affordable = this.player.gold >= t.item.price;
-        const owned = t.item.key === 'poky' && this.player.weapon === 'poky';
+        const owned =
+          (t.item.key === 'poky' && this.player.weapon === 'poky') ||
+          (t.item.key === 'slumber' && this.player.hasSlumberKey);
         if (owned) {
           t.price.setText('OWNED');
           t.price.setColor('#888888');
@@ -1174,7 +1477,8 @@
     tryBuy(key) {
       const item = this.shopItems.find(it => it.key === key);
       if (!item) return;
-      if (item.key === 'poky' && this.player.weapon === 'poky') return; // already owned
+      if (item.key === 'poky' && this.player.weapon === 'poky') return;
+      if (item.key === 'slumber' && this.player.hasSlumberKey) return;
       if (this.player.gold < item.price) return;
       this.player.gold -= item.price;
       if (item.key === 'heal') {
@@ -1189,13 +1493,30 @@
       } else if (item.key === 'poky') {
         this.player.setWeapon('poky');
         this.refreshWeaponHud();
+      } else if (item.key === 'slumber') {
+        this.player.hasSlumberKey = true;
+        // Tiny banner so the purchase is felt.
+        const w = this.scale.width;
+        const banner = this.add.text(w / 2, 80,
+          "you bought the slumber man's key . . .",
+          {
+            fontFamily: 'monospace', fontSize: '16px',
+            color: '#c8b3ff', fontStyle: 'italic',
+            backgroundColor: '#000000', padding: { x: 12, y: 6 },
+          }
+        ).setOrigin(0.5).setDepth(2200).setAlpha(0);
+        this.tweens.add({
+          targets: banner, alpha: { from: 0, to: 1 },
+          duration: 250, yoyo: true, hold: 1400,
+          onComplete: () => banner.destroy(),
+        });
       } else if (item.key === 'skip') {
         this.refreshGoldHud();
         this.closeShop();
         this.transitioning = true;
         this.cameras.main.flash(220, 180, 80, 200);
         this.time.delayedCall(180, () => {
-          if (this.roomNumber >= TOTAL_ROOMS) {
+          if (this.roomNumber >= this.totalRooms) {
             this.scene.start('WinScene');
           } else {
             this.scene.start('GameScene', {
@@ -1205,6 +1526,8 @@
               gold: this.player.gold,
               weapon: this.player.weapon,
               speedUntil: this.player.speedUntil,
+              mode: this.mode,
+          hasSlumberKey: this.player.hasSlumberKey,
             });
           }
         });
@@ -1250,6 +1573,8 @@
           this.tryBuy('poky');
         } else if (Phaser.Input.Keyboard.JustDown(this.controls.buy4)) {
           this.tryBuy('skip');
+        } else if (Phaser.Input.Keyboard.JustDown(this.controls.buy5)) {
+          this.tryBuy('slumber');
         }
         return;
       }
@@ -1266,6 +1591,7 @@
       this.player.update(time, this.controls);
       for (const e of this.enemies) e.update();
       this.updateDarkMask();
+      this.updateLasers(time);
 
       // F near the challenge machine opens the accept/decline prompt.
       if (this.machineSprite && !this.challengePromptOpen &&
@@ -1275,6 +1601,25 @@
         if (Math.abs(dx) < 28 && Math.abs(dy) < 36) {
           this.openChallengePrompt();
           return;
+        }
+      }
+
+      // F on the giant door — secret-mode unlock if the player has the key.
+      if (this.giantDoorSprite &&
+          Phaser.Input.Keyboard.JustDown(this.controls.interact)) {
+        const g = this.giantDoorSprite;
+        const px = this.player.sprite.x;
+        const py = this.player.sprite.y;
+        const inDoor =
+          Math.abs(px - g.x) < g.displayWidth / 2 + 16 &&
+          Math.abs(py - g.y) < g.displayHeight / 2 + 16;
+        if (inDoor) {
+          if (this.player.hasSlumberKey) {
+            this.unlockSecretMode();
+            return;
+          } else {
+            this.showSlumberKeyHint();
+          }
         }
       }
 
@@ -1307,7 +1652,7 @@
       // dev: skip rooms (handy for testing)
       if (Phaser.Input.Keyboard.JustDown(this.controls.skipNext)) {
         this.transitioning = true;
-        if (this.roomNumber >= TOTAL_ROOMS) {
+        if (this.roomNumber >= this.totalRooms) {
           this.scene.start('WinScene');
         } else {
           this.scene.start('GameScene', {
@@ -1317,6 +1662,8 @@
             gold: this.player.gold,
             weapon: this.player.weapon,
             speedUntil: this.player.speedUntil,
+            mode: this.mode,
+          hasSlumberKey: this.player.hasSlumberKey,
           });
         }
         return;
@@ -1330,6 +1677,8 @@
           gold: this.player.gold,
           weapon: this.player.weapon,
           speedUntil: this.player.speedUntil,
+          mode: this.mode,
+          hasSlumberKey: this.player.hasSlumberKey,
         });
         return;
       }
@@ -1343,7 +1692,7 @@
       if (!this.player.alive) {
         this.transitioning = true;
         this.time.delayedCall(400, () => {
-          this.scene.start('GameOverScene', { roomNumber: this.roomNumber });
+          this.scene.start('GameOverScene', { roomNumber: this.roomNumber, mode: this.mode });
         });
       }
     }
@@ -1355,7 +1704,9 @@
       super('GameOverScene');
     }
     init(data) {
-      this.roomNumber = data && data.roomNumber ? data.roomNumber : 1;
+      data = data || {};
+      this.roomNumber = data.roomNumber || 1;
+      this.runMode = data.mode === 'hard' ? 'hard' : 'normal';
     }
     create() {
       const w = this.scale.width;
@@ -1366,7 +1717,8 @@
         fontSize: '64px',
         color: '#e54545',
       }).setOrigin(0.5);
-      this.add.text(w / 2, 260, `made it to level ${this.roomNumber} of ${TOTAL_ROOMS}`, {
+      const total = totalRoomsFor(this.runMode);
+      this.add.text(w / 2, 260, `made it to level ${this.roomNumber} of ${total}`, {
         fontFamily: 'monospace',
         fontSize: '22px',
         color: '#dddddd',
@@ -1398,16 +1750,16 @@
             speedUntil: 0,
             bonus: !!cp.bonus,
             bonusOriginLevel: cp.bonusOriginLevel || 0,
+            mode: cp.mode || 'normal',
+            hasSlumberKey: !!cp.hasSlumberKey,
           });
         } else {
-          const seed = (Math.random() * 0x7fffffff) >>> 0;
-          this.scene.start('GameScene', { roomNumber: 1, hearts: 3, seed });
+          this.scene.start('TitleScene');
         }
       };
       const freshRun = () => {
         window.STICK_CHECKPOINT = null;
-        const seed = (Math.random() * 0x7fffffff) >>> 0;
-        this.scene.start('GameScene', { roomNumber: 1, hearts: 3, seed });
+        this.scene.start('TitleScene');
       };
       this.input.keyboard.once('keydown-ENTER', retry);
       this.input.keyboard.once('keydown-SPACE', retry);
