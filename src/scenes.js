@@ -1,6 +1,110 @@
 (function () {
   const TOTAL_ROOMS = 50;
 
+  const ACHIEVEMENTS = [
+    { id: 'room25',   name: 'Halfway-ish',     desc: 'Reach level 25' },
+    { id: 'room50',   name: 'Stick Champion',  desc: 'Reach level 50' },
+    { id: 'gold150',  name: 'Treasure Hunter', desc: 'Carry 150 gold at once' },
+  ];
+
+  const ACH_STORAGE_KEY = 'stick-knight-achievements';
+
+  function loadAchievements() {
+    try {
+      const raw = localStorage.getItem(ACH_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveAchievements(state) {
+    try {
+      localStorage.setItem(ACH_STORAGE_KEY, JSON.stringify(state));
+    } catch (e) { /* localStorage unavailable; lose progress this session */ }
+  }
+
+  function drawStoneBackground(scene, gfx, detailed) {
+    const W = scene.scale.width;
+    const H = scene.scale.height;
+    const brickW = 64;
+    const brickH = 32;
+    const rng = scene.rng;
+    for (let row = 0; (row * brickH) < H + brickH; row++) {
+      const y = row * brickH;
+      const offset = (row % 2) * (brickW / 2);
+      for (let col = -1; col * brickW + offset < W + brickW; col++) {
+        const x = col * brickW + offset;
+        const grey = 70 + rng.int(-20, 25);
+        const r = Math.max(0, Math.min(255, grey));
+        const fill = (r << 16) | (r << 8) | r;
+        gfx.fillStyle(fill, 1);
+        gfx.fillRect(x, y, brickW - 2, brickH - 2);
+        gfx.lineStyle(1, 0x1a1a1a, 1);
+        gfx.strokeRect(x, y, brickW - 2, brickH - 2);
+        if (detailed) {
+          // Top-edge highlight strip — gives the brick a chiseled look.
+          const hl = Math.min(255, r + 40);
+          const hlColor = (hl << 16) | (hl << 8) | hl;
+          gfx.fillStyle(hlColor, 1);
+          gfx.fillRect(x + 3, y + 2, brickW - 14, 2);
+          gfx.fillRect(x + 3, y + 2, 2, brickH - 12);
+          // Random hairline crack inside the brick.
+          if (rng.chance(0.35)) {
+            const cx = x + rng.int(8, brickW - 12);
+            const cy = y + rng.int(6, brickH - 10);
+            const len = rng.int(8, 18);
+            const slope = rng.float(-0.6, 0.6);
+            gfx.lineStyle(1, 0x111111, 1);
+            gfx.lineBetween(cx, cy, cx + len, cy + Math.round(len * slope));
+          }
+          // Occasional darker flecks (small dots).
+          if (rng.chance(0.4)) {
+            gfx.fillStyle(0x2a2a2a, 1);
+            gfx.fillRect(
+              x + rng.int(8, brickW - 10),
+              y + rng.int(6, brickH - 8),
+              2, 2
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // Small triangular stalactites hanging from just below the top wall.
+  function drawStalactites(scene, gfx) {
+    const W = scene.scale.width;
+    const TILE = 32;
+    const baseY = TILE; // top wall ends here
+    const count = scene.rng.int(10, 16);
+    for (let i = 0; i < count; i++) {
+      const x = scene.rng.int(20, W - 20);
+      const baseW = scene.rng.int(6, 14);
+      const len = scene.rng.int(8, 22);
+      const grey = 60 + scene.rng.int(-10, 15);
+      const c = Math.max(0, Math.min(255, grey));
+      const fill = (c << 16) | (c << 8) | c;
+      gfx.fillStyle(fill, 1);
+      gfx.fillTriangle(
+        x - baseW / 2, baseY,
+        x + baseW / 2, baseY,
+        x, baseY + len
+      );
+      gfx.lineStyle(1, 0x1a1c20, 1);
+      gfx.strokeTriangle(
+        x - baseW / 2, baseY,
+        x + baseW / 2, baseY,
+        x, baseY + len
+      );
+      // Tiny highlight on the left edge for a touch of shape.
+      const hl = Math.min(255, c + 30);
+      const hlColor = (hl << 16) | (hl << 8) | hl;
+      gfx.lineStyle(1, hlColor, 1);
+      gfx.lineBetween(x - baseW / 2 + 1, baseY + 1, x - 1, baseY + len - 2);
+    }
+  }
+
   function hsvToHex(h, s, v) {
     const i = Math.floor(h * 6);
     const f = h * 6 - i;
@@ -49,6 +153,8 @@
         '  Wall jump   while sliding on a wall, press jump',
         '  Attack      Left Click / J / X   (5 hits to kill an enemy)',
         '  Shop        E              (gold drops from kills)',
+        '  Achievements  Q',
+        '  Interact      F            (challenge machine on /10 levels)',
         '',
         '  Find the key, kill enemies, exit through the door on the right.',
         '',
@@ -87,13 +193,17 @@
       this.startingGold = data.gold || 0;
       this.startingWeapon = data.weapon || 'stick';
       this.startingSpeedUntil = data.speedUntil || 0;
+      this.isBonus = !!data.bonus;
+      this.bonusOriginLevel = data.bonusOriginLevel || 0;
+      this.bonusCompleted = false;
+      this.challengePromptOpen = false;
     }
 
     create() {
       const w = this.scale.width;
       const h = this.scale.height;
 
-      this.bg = this.add.rectangle(w / 2, h / 2, w, h, 0x1a1d28);
+      this.bg = this.add.rectangle(w / 2, h / 2, w, h, 0x1a1d28).setDepth(-10);
 
       // Extend the world below the visible canvas so pit falls actually kill.
       // The player drops off-screen and we detect death by y position.
@@ -118,7 +228,11 @@
         buy3: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.THREE),
         buy4: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.FOUR),
         esc: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC),
+        achievements: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Q),
+        interact: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.F),
       };
+
+      this.achievements = loadAchievements();
 
       this.platformsGroup = this.physics.add.staticGroup();
       this.movingPlatformsGroup = this.physics.add.group({
@@ -149,9 +263,10 @@
           if (this.player.hitEnemiesThisSwing.has(enemy)) return;
           this.player.hitEnemiesThisSwing.add(enemy);
           const killed = enemy.takeDamage(this.player.getDamage(), this.player.facing);
-          if (killed) {
+          if (killed && !this.isBonus) {
             this.player.gold += 10;
             this.refreshGoldHud();
+            if (this.player.gold >= 150) this.unlockAchievement('gold150');
           }
         }
       );
@@ -274,6 +389,14 @@
       if (this.doorBar2) this.doorBar2.destroy();
       if (this.bonusDoorSprite) this.bonusDoorSprite.destroy();
       if (this.bonusDoorLabel) this.bonusDoorLabel.destroy();
+      if (this.darkOverlay) { this.darkOverlay.destroy(); this.darkOverlay = null; }
+      if (this.darkMaskGfx) { this.darkMaskGfx.destroy(); this.darkMaskGfx = null; }
+      if (this.stoneOverlay) { this.stoneOverlay.destroy(); this.stoneOverlay = null; }
+      if (this.stalactiteOverlay) { this.stalactiteOverlay.destroy(); this.stalactiteOverlay = null; }
+      if (this.machineSprite) { this.machineSprite.destroy(); this.machineSprite = null; }
+      if (this.machineLight) { this.machineLight.destroy(); this.machineLight = null; }
+      if (this.machineLabel) { this.machineLabel.destroy(); this.machineLabel = null; }
+      if (this.challengeBanner) { this.challengeBanner.destroy(); this.challengeBanner = null; }
 
       this.rng = window.makeRng((roomNumber * 7919 + 31) ^ this.sessionSeed);
 
@@ -283,7 +406,21 @@
       const val = this.rng.float(0.10, 0.18);
       this.bg.setFillStyle(hsvToHex(hue, sat, val));
 
-      const room = window.RoomGenerator.generateRoom(roomNumber, this.sessionSeed);
+      // Procedural stone-brick overlay at 50% alpha. Detailed variant on /10
+      // levels gets highlights and cracks for a more ornate feel.
+      this.stoneOverlay = this.add.graphics();
+      this.stoneOverlay.setAlpha(0.5);
+      this.stoneOverlay.setDepth(-5);
+      drawStoneBackground(this, this.stoneOverlay, roomNumber % 10 === 0);
+
+      // Small stalactites hanging from the ceiling — purely decorative.
+      this.stalactiteOverlay = this.add.graphics();
+      this.stalactiteOverlay.setAlpha(0.85);
+      this.stalactiteOverlay.setDepth(-3);
+      drawStalactites(this, this.stalactiteOverlay);
+
+      const generatorOpts = this.isBonus ? { bonus: true, forceEnemyCount: 15 } : undefined;
+      const room = window.RoomGenerator.generateRoom(roomNumber, this.sessionSeed, generatorOpts);
       this.room = room;
       this.tiles = room.tiles;
       this.tileSize = window.RoomGenerator.TILE;
@@ -309,6 +446,10 @@
         this.showCheckpointBanner();
       }
 
+      // Reach-level achievements.
+      if (roomNumber >= 25) this.unlockAchievement('room25');
+      if (roomNumber >= 50) this.unlockAchievement('room50');
+
       // platforms — merge contiguous solid tiles per row
       const TILE = this.tileSize;
       for (let r = 0; r < this.rows; r++) {
@@ -321,9 +462,9 @@
             const x = runStart * TILE + w / 2;
             const y = r * TILE + TILE / 2;
             const isWallOrCeiling = r === 0 || c === this.cols || c === 0;
-            const fill = (r === this.rows - 1 || isWallOrCeiling) ? 0x4a3522 : 0x6f4e2c;
+            const fill = (r === this.rows - 1 || isWallOrCeiling) ? 0x363a40 : 0x575c64;
             const rect = this.add.rectangle(x, y, w, TILE, fill);
-            rect.setStrokeStyle(2, 0x2a1a0a);
+            rect.setStrokeStyle(2, 0x1a1c20);
             this.physics.add.existing(rect, true);
             this.platformsGroup.add(rect);
             runStart = -1;
@@ -334,63 +475,99 @@
       this.player.teleport(room.playerSpawn.x, room.playerSpawn.y);
       this.player.sprite.body.setVelocity(0, 0);
 
-      this.keySprite = this.add.rectangle(room.keyPos.x, room.keyPos.y, 18, 14, 0xfff36a);
-      this.keySprite.setStrokeStyle(2, 0x8a6e10);
-      this.physics.add.existing(this.keySprite);
-      this.keySprite.body.setAllowGravity(false);
-      this.keySprite.body.setImmovable(true);
-      this.tweens.add({
-        targets: this.keySprite,
-        y: room.keyPos.y - 6,
-        duration: 700,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.easeInOut',
-      });
-      this.physics.add.overlap(this.player.sprite, this.keySprite, () => {
-        if (this.hasKey || !this.keySprite.active) return;
-        this.hasKey = true;
-        this.tweens.killTweensOf(this.keySprite);
-        const flash = this.add.rectangle(this.keySprite.x, this.keySprite.y, 30, 30, 0xfff36a, 1);
+      if (!this.isBonus) {
+        this.keySprite = this.add.rectangle(room.keyPos.x, room.keyPos.y, 18, 14, 0xfff36a);
+        this.keySprite.setStrokeStyle(2, 0x8a6e10);
+        this.physics.add.existing(this.keySprite);
+        this.keySprite.body.setAllowGravity(false);
+        this.keySprite.body.setImmovable(true);
         this.tweens.add({
-          targets: flash, alpha: 0, scaleX: 2, scaleY: 2, duration: 250,
-          onComplete: () => flash.destroy(),
+          targets: this.keySprite,
+          y: room.keyPos.y - 6,
+          duration: 700,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.easeInOut',
         });
-        this.keySprite.destroy();
+        this.physics.add.overlap(this.player.sprite, this.keySprite, () => {
+          if (this.hasKey || !this.keySprite.active) return;
+          this.hasKey = true;
+          this.tweens.killTweensOf(this.keySprite);
+          const flash = this.add.rectangle(this.keySprite.x, this.keySprite.y, 30, 30, 0xfff36a, 1);
+          this.tweens.add({
+            targets: flash, alpha: 0, scaleX: 2, scaleY: 2, duration: 250,
+            onComplete: () => flash.destroy(),
+          });
+          this.keySprite.destroy();
+          this.refreshDoorVisual();
+        });
+
+        this.doorSprite = this.add.rectangle(room.doorPos.x, room.doorPos.y, 28, 60, 0x444444);
+        this.doorSprite.setStrokeStyle(3, 0x222222);
+        this.physics.add.existing(this.doorSprite);
+        this.doorSprite.body.setAllowGravity(false);
+        this.doorSprite.body.setImmovable(true);
+        this.doorBar1 = this.add.rectangle(room.doorPos.x - 6, room.doorPos.y - 6, 22, 4, 0x222222);
+        this.doorBar2 = this.add.rectangle(room.doorPos.x + 6, room.doorPos.y + 6, 22, 4, 0x222222);
         this.refreshDoorVisual();
-      });
 
-      this.doorSprite = this.add.rectangle(room.doorPos.x, room.doorPos.y, 28, 60, 0x444444);
-      this.doorSprite.setStrokeStyle(3, 0x222222);
-      this.physics.add.existing(this.doorSprite);
-      this.doorSprite.body.setAllowGravity(false);
-      this.doorSprite.body.setImmovable(true);
-      this.doorBar1 = this.add.rectangle(room.doorPos.x - 6, room.doorPos.y - 6, 22, 4, 0x222222);
-      this.doorBar2 = this.add.rectangle(room.doorPos.x + 6, room.doorPos.y + 6, 22, 4, 0x222222);
-      this.refreshDoorVisual();
-
-      this.physics.add.overlap(this.player.sprite, this.doorSprite, () => {
-        if (!this.hasKey || this.transitioning) return;
-        this.transitioning = true;
-        this.cameras.main.flash(180, 255, 255, 255);
-        this.time.delayedCall(180, () => {
-          if (this.roomNumber >= TOTAL_ROOMS) {
-            this.scene.start('WinScene');
-          } else {
-            this.scene.start('GameScene', {
-              roomNumber: this.roomNumber + 1,
-              hearts: this.player.hearts,
-              seed: this.sessionSeed,
-              gold: this.player.gold,
-              weapon: this.player.weapon,
-              speedUntil: this.player.speedUntil,
-            });
-          }
+        this.physics.add.overlap(this.player.sprite, this.doorSprite, () => {
+          if (!this.hasKey || this.transitioning) return;
+          this.transitioning = true;
+          this.cameras.main.flash(180, 255, 255, 255);
+          this.time.delayedCall(180, () => {
+            if (this.roomNumber >= TOTAL_ROOMS) {
+              this.scene.start('WinScene');
+            } else {
+              this.scene.start('GameScene', {
+                roomNumber: this.roomNumber + 1,
+                hearts: this.player.hearts,
+                seed: this.sessionSeed,
+                gold: this.player.gold,
+                weapon: this.player.weapon,
+                speedUntil: this.player.speedUntil,
+              });
+            }
+          });
         });
-      });
+      }
 
-      // Bonus chest door — only on every 10th level.
-      if (room.bonusDoorPos) {
+      // Challenge machine — only on every 10th regular level.
+      if (!this.isBonus && room.machinePos) {
+        const mx = room.machinePos.x;
+        const my = room.machinePos.y;
+        this.machineSprite = this.add.rectangle(mx, my, 26, 28, 0x3aa1c4);
+        this.machineSprite.setStrokeStyle(3, 0x123e52);
+        this.physics.add.existing(this.machineSprite);
+        this.machineSprite.body.setAllowGravity(false);
+        this.machineSprite.body.setImmovable(true);
+        // Indicator light dot
+        this.machineLight = this.add.rectangle(mx, my - 8, 6, 6, 0xffd24d);
+        this.tweens.add({
+          targets: this.machineLight, alpha: { from: 0.4, to: 1 },
+          duration: 400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+        });
+        this.machineLabel = this.add.text(mx, my - 30, 'F: CHALLENGE', {
+          fontFamily: 'monospace', fontSize: '11px',
+          color: '#a8e6f5', fontStyle: 'bold',
+        }).setOrigin(0.5);
+      }
+
+      // Challenge banner shown while inside the bonus room.
+      if (this.isBonus) {
+        const W = this.scale.width;
+        this.challengeBanner = this.add.text(W / 2, 60,
+          `CHALLENGE — DEFEAT ALL ${room.enemySpawns.length} ENEMIES`,
+          {
+            fontFamily: 'monospace', fontSize: '20px',
+            color: '#ffae5e', fontStyle: 'bold',
+            backgroundColor: '#000000', padding: { x: 14, y: 6 },
+          }
+        ).setOrigin(0.5).setDepth(1500);
+      }
+
+      // Bonus chest door — only on every 10th regular level (not in bonus room).
+      if (!this.isBonus && room.bonusDoorPos) {
         const bx = room.bonusDoorPos.x;
         const by = room.bonusDoorPos.y - 22;
         this.bonusDoorSprite = this.add.rectangle(bx, by, 24, 44, 0x9b4dc4);
@@ -462,6 +639,20 @@
       this.timeLeftMs = 120000;
       this.timeUpTriggered = false;
 
+      // Dark-room overlay: black rectangle covering the playfield with an
+      // inverted circular mask cut around the player. Updated each frame.
+      if (room.darkRoom) {
+        const W = this.scale.width;
+        const H = this.scale.height;
+        this.darkOverlay = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.95);
+        this.darkOverlay.setDepth(900);
+        this.darkMaskGfx = this.make.graphics();
+        const mask = this.darkMaskGfx.createGeometryMask();
+        mask.invertAlpha = true;
+        this.darkOverlay.setMask(mask);
+        this.updateDarkMask();
+      }
+
       this.refreshHearts();
       this.refreshKeyHud();
       this.refreshGoldHud();
@@ -522,6 +713,15 @@
       const s = totalSec % 60;
       this.hudTimeText.setText(`TIME ${m}:${s.toString().padStart(2, '0')}`);
       this.hudTimeText.setColor(totalSec <= 30 ? '#ff5050' : '#cdeeff');
+    }
+
+    updateDarkMask() {
+      if (!this.darkMaskGfx) return;
+      const TILE = window.RoomGenerator.TILE;
+      const radius = TILE * 3 + 16; // 3 tiles around the player + a bit
+      this.darkMaskGfx.clear();
+      this.darkMaskGfx.fillStyle(0xffffff);
+      this.darkMaskGfx.fillCircle(this.player.sprite.x, this.player.sprite.y, radius);
     }
 
     showCheckpointBanner() {
@@ -612,6 +812,221 @@
       }
     }
 
+    unlockAchievement(id) {
+      if (!this.achievements) this.achievements = loadAchievements();
+      if (this.achievements[id]) return;
+      const ach = ACHIEVEMENTS.find(a => a.id === id);
+      if (!ach) return;
+      this.achievements[id] = true;
+      saveAchievements(this.achievements);
+      this.showAchievementToast(ach);
+    }
+
+    showAchievementToast(ach) {
+      const w = this.scale.width;
+      const banner = this.add.text(w / 2, 110,
+        `★ ACHIEVEMENT  —  ${ach.name}`,
+        {
+          fontFamily: 'monospace', fontSize: '20px',
+          color: '#f4d35e', fontStyle: 'bold',
+          backgroundColor: '#000000', padding: { x: 14, y: 8 },
+        }
+      ).setOrigin(0.5).setDepth(1500).setAlpha(0);
+      this.tweens.add({
+        targets: banner,
+        alpha: { from: 0, to: 1 },
+        duration: 250,
+        yoyo: true,
+        hold: 1600,
+        onComplete: () => banner.destroy(),
+      });
+    }
+
+    openAchievements() {
+      if (this.achievementsOpen || this.shopOpen || this.transitioning) return;
+      this.achievementsOpen = true;
+      this.physics.pause();
+      const w = this.scale.width;
+      const h = this.scale.height;
+      const D = 2000;
+
+      this.achGroup = this.add.container(0, 0).setDepth(D);
+      const dim = this.add.rectangle(w / 2, h / 2, w, h, 0x000000, 0.6);
+      const panel = this.add.rectangle(w / 2, h / 2, 620, 380, 0x1a1d28, 0.97);
+      panel.setStrokeStyle(3, 0xf4d35e);
+      const title = this.add.text(w / 2, h / 2 - 150, 'ACHIEVEMENTS', {
+        fontFamily: 'monospace', fontSize: '30px',
+        color: '#f4d35e', fontStyle: 'bold',
+      }).setOrigin(0.5);
+
+      const unlockedCount = ACHIEVEMENTS.filter(a => this.achievements[a.id]).length;
+      const summary = this.add.text(w / 2, h / 2 - 110,
+        `${unlockedCount} / ${ACHIEVEMENTS.length} unlocked`,
+        { fontFamily: 'monospace', fontSize: '16px', color: '#cccccc' }
+      ).setOrigin(0.5);
+
+      this.achGroup.add([dim, panel, title, summary]);
+
+      let y = h / 2 - 60;
+      for (const a of ACHIEVEMENTS) {
+        const got = !!this.achievements[a.id];
+        const marker = this.add.text(w / 2 - 250, y, got ? '★' : '☆', {
+          fontFamily: 'monospace', fontSize: '28px',
+          color: got ? '#f4d35e' : '#555555', fontStyle: 'bold',
+        }).setOrigin(0, 0.5);
+        const name = this.add.text(w / 2 - 210, y, a.name, {
+          fontFamily: 'monospace', fontSize: '20px',
+          color: got ? '#dddddd' : '#777777', fontStyle: 'bold',
+        }).setOrigin(0, 0.5);
+        const desc = this.add.text(w / 2 - 210, y + 22, a.desc, {
+          fontFamily: 'monospace', fontSize: '14px',
+          color: got ? '#9be39b' : '#555555',
+        }).setOrigin(0, 0.5);
+        this.achGroup.add([marker, name, desc]);
+        y += 60;
+      }
+
+      const hint = this.add.text(w / 2, h / 2 + 150, 'press Q or ESC to close', {
+        fontFamily: 'monospace', fontSize: '14px', color: '#888888',
+      }).setOrigin(0.5);
+      this.achGroup.add([hint]);
+    }
+
+    closeAchievements() {
+      if (!this.achievementsOpen) return;
+      this.achievementsOpen = false;
+      this.physics.resume();
+      if (this.achGroup) {
+        this.achGroup.destroy(true);
+        this.achGroup = null;
+      }
+    }
+
+    openChallengePrompt() {
+      if (this.challengePromptOpen) return;
+      this.challengePromptOpen = true;
+      this.physics.pause();
+
+      const w = this.scale.width;
+      const h = this.scale.height;
+      const D = 2000;
+      this.challengePromptGroup = this.add.container(0, 0).setDepth(D);
+
+      const dim = this.add.rectangle(w / 2, h / 2, w, h, 0x000000, 0.6);
+      const panel = this.add.rectangle(w / 2, h / 2, 560, 280, 0x1a2228, 0.97);
+      panel.setStrokeStyle(3, 0x3aa1c4);
+      const title = this.add.text(w / 2, h / 2 - 90, 'CHALLENGE ROOM', {
+        fontFamily: 'monospace', fontSize: '26px',
+        color: '#a8e6f5', fontStyle: 'bold',
+      }).setOrigin(0.5);
+      const desc = this.add.text(w / 2, h / 2 - 40,
+        'enter a sealed room with 15 enemies\nclear them all to win 250 gold',
+        { fontFamily: 'monospace', fontSize: '15px', color: '#cccccc', align: 'center' }
+      ).setOrigin(0.5);
+      const accept = this.add.text(w / 2, h / 2 + 30, '1.  ACCEPT', {
+        fontFamily: 'monospace', fontSize: '20px',
+        color: '#9be39b', fontStyle: 'bold',
+      }).setOrigin(0.5);
+      const decline = this.add.text(w / 2, h / 2 + 65, '2.  DECLINE', {
+        fontFamily: 'monospace', fontSize: '20px',
+        color: '#dddddd',
+      }).setOrigin(0.5);
+      const hint = this.add.text(w / 2, h / 2 + 110,
+        'press 1 or 2,  ESC to back out',
+        { fontFamily: 'monospace', fontSize: '12px', color: '#888888' }
+      ).setOrigin(0.5);
+
+      this.challengePromptGroup.add([dim, panel, title, desc, accept, decline, hint]);
+    }
+
+    closeChallengePrompt() {
+      if (!this.challengePromptOpen) return;
+      this.challengePromptOpen = false;
+      this.physics.resume();
+      if (this.challengePromptGroup) {
+        this.challengePromptGroup.destroy(true);
+        this.challengePromptGroup = null;
+      }
+    }
+
+    declineChallenge() {
+      this.closeChallengePrompt();
+    }
+
+    acceptChallenge() {
+      this.closeChallengePrompt();
+      this.transitioning = true;
+      // Save a checkpoint pointing back to this bonus room — death sends
+      // the player back here to retry the challenge.
+      window.STICK_CHECKPOINT = {
+        roomNumber: this.roomNumber,
+        seed: this.sessionSeed,
+        gold: this.player.gold,
+        weapon: this.player.weapon,
+        bonus: true,
+        bonusOriginLevel: this.roomNumber,
+      };
+      this.cameras.main.flash(220, 80, 200, 240);
+      this.time.delayedCall(180, () => {
+        this.scene.start('GameScene', {
+          roomNumber: this.roomNumber,
+          hearts: this.player.hearts,
+          seed: this.sessionSeed,
+          gold: this.player.gold,
+          weapon: this.player.weapon,
+          speedUntil: this.player.speedUntil,
+          bonus: true,
+          bonusOriginLevel: this.roomNumber,
+        });
+      });
+    }
+
+    completeChallenge() {
+      // Award 250 gold and advance to the level after the bonus origin.
+      this.transitioning = true;
+      this.player.gold += 250;
+      this.refreshGoldHud();
+      if (this.player.gold >= 150) this.unlockAchievement('gold150');
+
+      const w = this.scale.width;
+      const h = this.scale.height;
+      const banner = this.add.text(w / 2, h / 2,
+        'CHALLENGE CLEARED!  +250 gold',
+        {
+          fontFamily: 'monospace', fontSize: '28px',
+          color: '#f4d35e', fontStyle: 'bold',
+          backgroundColor: '#000000', padding: { x: 24, y: 14 },
+        }
+      ).setOrigin(0.5).setDepth(2000);
+      this.cameras.main.flash(260, 240, 220, 80);
+
+      const nextLevel = (this.bonusOriginLevel || this.roomNumber) + 1;
+      // Replace the checkpoint with one pointing at the next regular level
+      // so dying after the bonus doesn't drag the player back into it.
+      window.STICK_CHECKPOINT = {
+        roomNumber: Math.min(nextLevel, TOTAL_ROOMS),
+        seed: this.sessionSeed,
+        gold: this.player.gold,
+        weapon: this.player.weapon,
+      };
+
+      this.time.delayedCall(1700, () => {
+        banner.destroy();
+        if (nextLevel > TOTAL_ROOMS) {
+          this.scene.start('WinScene');
+        } else {
+          this.scene.start('GameScene', {
+            roomNumber: nextLevel,
+            hearts: this.player.hearts,
+            seed: this.sessionSeed,
+            gold: this.player.gold,
+            weapon: this.player.weapon,
+            speedUntil: this.player.speedUntil,
+          });
+        }
+      });
+    }
+
     openChest() {
       // Roll a reward. If we'd hand out poky stick but the player already
       // owns one, swap it for bonus gold.
@@ -642,6 +1057,7 @@
       this.refreshGoldHud();
       this.refreshWeaponHud();
       this.refreshSpeedHud();
+      if (this.player.gold >= 150) this.unlockAchievement('gold150');
 
       const w = this.scale.width;
       const h = this.scale.height;
@@ -801,6 +1217,26 @@
     update(time, delta) {
       if (this.transitioning) return;
 
+      // Challenge prompt — accept (1) / decline (2 or ESC).
+      if (this.challengePromptOpen) {
+        if (Phaser.Input.Keyboard.JustDown(this.controls.buy1)) {
+          this.acceptChallenge();
+        } else if (Phaser.Input.Keyboard.JustDown(this.controls.buy2) ||
+                   Phaser.Input.Keyboard.JustDown(this.controls.esc)) {
+          this.declineChallenge();
+        }
+        return;
+      }
+
+      // Achievements menu — close-only input while open.
+      if (this.achievementsOpen) {
+        if (Phaser.Input.Keyboard.JustDown(this.controls.achievements) ||
+            Phaser.Input.Keyboard.JustDown(this.controls.esc)) {
+          this.closeAchievements();
+        }
+        return;
+      }
+
       // Shop input is handled even while paused so the player can close it.
       if (this.shopOpen) {
         if (Phaser.Input.Keyboard.JustDown(this.controls.shop) ||
@@ -821,10 +1257,36 @@
         this.openShop();
         return;
       }
+      if (Phaser.Input.Keyboard.JustDown(this.controls.achievements)) {
+        this.openAchievements();
+        return;
+      }
 
       this.updateMovingPlatforms();
       this.player.update(time, this.controls);
       for (const e of this.enemies) e.update();
+      this.updateDarkMask();
+
+      // F near the challenge machine opens the accept/decline prompt.
+      if (this.machineSprite && !this.challengePromptOpen &&
+          Phaser.Input.Keyboard.JustDown(this.controls.interact)) {
+        const dx = this.player.sprite.x - this.machineSprite.x;
+        const dy = this.player.sprite.y - this.machineSprite.y;
+        if (Math.abs(dx) < 28 && Math.abs(dy) < 36) {
+          this.openChallengePrompt();
+          return;
+        }
+      }
+
+      // Bonus room completion check: all enemies dead → reward and advance.
+      if (this.isBonus && !this.bonusCompleted) {
+        const alive = this.enemies.some(e => !e.dead);
+        if (!alive && this.enemies.length > 0) {
+          this.bonusCompleted = true;
+          this.completeChallenge();
+          return;
+        }
+      }
 
       // Tick the per-level timer. Pauses naturally because we early-return
       // out of update() while the shop is open or transitioning.
@@ -934,6 +1396,8 @@
             gold: cp.gold,
             weapon: cp.weapon,
             speedUntil: 0,
+            bonus: !!cp.bonus,
+            bonusOriginLevel: cp.bonusOriginLevel || 0,
           });
         } else {
           const seed = (Math.random() * 0x7fffffff) >>> 0;

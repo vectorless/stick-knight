@@ -395,11 +395,11 @@
     return platforms;
   }
 
-  function generateRoom(roomNumber, sessionSeed) {
+  function generateRoom(roomNumber, sessionSeed, opts) {
+    opts = opts || {};
     const seed = sessionSeed || 0;
-    // Mix the session seed with the room number so each run has a unique
-    // sequence of layouts but a given (seed, roomNumber) is reproducible.
-    const mixed = ((seed ^ (roomNumber * 1013904223)) + 1) >>> 0;
+    const extra = opts.bonus ? 0xBE57BABE : 0;
+    const mixed = ((seed ^ (roomNumber * 1013904223) ^ extra) + 1) >>> 0;
     const rng = window.makeRng(mixed);
 
     const tiles = createEmptyTiles();
@@ -471,12 +471,10 @@
       return anyReachable;
     });
 
-    // Boss levels override the normal scaling.
-    //   - every 50 levels → 15 enemies (super-boss)
-    //   - every 10 levels → 5 enemies (boss)
-    //   - otherwise        → scales with level number
     let enemyCount;
-    if (roomNumber % 50 === 0) {
+    if (opts.forceEnemyCount != null) {
+      enemyCount = opts.forceEnemyCount;
+    } else if (roomNumber % 50 === 0) {
       enemyCount = 15;
     } else if (roomNumber % 10 === 0) {
       enemyCount = 5;
@@ -536,6 +534,28 @@
       }
     }
 
+    const darkRoom = rng.chance(0.05);
+
+    // Challenge machine on every 10th regular level. Sits on the floor in
+    // open space, away from spawn / door / bonus chest door.
+    let machinePos = null;
+    if (roomNumber % 10 === 0 && !opts.bonus) {
+      const candidates = [];
+      for (let c = 6; c < COLS - 4; c++) {
+        if (tiles[ROWS - 1][c] === 1 &&
+            tiles[ROWS - 2][c] === 0 &&
+            reachable.has(`${c},${ROWS - 1}`)) {
+          if (Math.abs(c * TILE - keyPos.x) < TILE * 2) continue;
+          if (bonusDoorPos && Math.abs(c * TILE - bonusDoorPos.x) < TILE * 2) continue;
+          candidates.push(c);
+        }
+      }
+      if (candidates.length > 0) {
+        const c = rng.pick(candidates);
+        machinePos = { x: c * TILE + TILE / 2, y: (ROWS - 1) * TILE - 18 };
+      }
+    }
+
     return {
       tiles,
       playerSpawn,
@@ -545,6 +565,8 @@
       enemySpawns,
       enemySpeed,
       movingPlatforms,
+      darkRoom,
+      machinePos,
     };
   }
 
