@@ -1411,7 +1411,7 @@
         { key: 'heal',    hotkey: '1', name: 'Healing Potion',     desc: 'restore all hearts',                  price: 30 },
         { key: 'speed',   hotkey: '2', name: 'Speed Potion',       desc: '2.5x speed for 20s',                  price: 60 },
         { key: 'poky',    hotkey: '3', name: 'Poky Stick',         desc: '3-hit kill weapon (perm)',            price: 120 },
-        { key: 'skip',    hotkey: '4', name: 'Skip Level',         desc: 'advance immediately',                 price: 0 },
+        { key: 'skip',    hotkey: '4', name: 'Skip Level',         desc: 'advance immediately',                 price: 20 },
         { key: 'slumber', hotkey: '5', name: "Slumber Man's Key",  desc: '???',                                 price: 300 },
       ];
       this.shopItemTexts = [];
